@@ -25,15 +25,16 @@ type Visualizer struct {
 	tx   chan screen.Texture
 	done chan struct{}
 
-	sz  size.Event
-	pos image.Rectangle
+	sz     size.Event
+	pos    image.Rectangle
+	center image.Point
 }
 
 func (pw *Visualizer) Main() {
 	pw.tx = make(chan screen.Texture)
 	pw.done = make(chan struct{})
-	pw.pos.Max.X = 200
-	pw.pos.Max.Y = 200
+	pw.center.X = 300
+	pw.center.Y = 300
 	driver.Main(pw.run)
 }
 
@@ -42,8 +43,14 @@ func (pw *Visualizer) Update(t screen.Texture) {
 }
 
 func (pw *Visualizer) run(s screen.Screen) {
+	if pw.OnScreenReady != nil {
+		pw.OnScreenReady(s)
+	}
+
 	w, err := s.NewWindow(&screen.NewWindowOptions{
-		Title: pw.Title,
+		Title:  pw.Title,
+		Width:  800,
+		Height: 800,
 	})
 	if err != nil {
 		log.Fatal("Failed to initialize the app window:", err)
@@ -52,10 +59,6 @@ func (pw *Visualizer) run(s screen.Screen) {
 		w.Release()
 		close(pw.done)
 	}()
-
-	if pw.OnScreenReady != nil {
-		pw.OnScreenReady(s)
-	}
 
 	pw.w = w
 
@@ -109,13 +112,17 @@ func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
 
 	case size.Event: // Оновлення даних про розмір вікна.
 		pw.sz = e
+		pw.center = image.Pt(pw.sz.WidthPx/2, pw.sz.HeightPx/2)
 
 	case error:
 		log.Printf("ERROR: %s", e)
 
 	case mouse.Event:
 		if t == nil {
-			// TODO: Реалізувати реакцію на натискання кнопки миші.
+			if e.Button == 1 && e.Direction == 1 {
+				pw.center.Y, pw.center.X = int(e.Y), int(e.X)
+				pw.w.Send(paint.Event{})
+			}
 		}
 
 	case paint.Event:
@@ -130,13 +137,22 @@ func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
 	}
 }
 
-func (pw *Visualizer) drawDefaultUI() {
-	pw.w.Fill(pw.sz.Bounds(), color.Black, draw.Src) // Фон.
+func (pw *Visualizer) drawCross() {
+	//Вертикальна частина хреста.
+	pw.w.Fill(image.Rect(pw.center.X-200, pw.center.Y-75, pw.center.X+200, pw.center.Y+75),
+		color.RGBA{R: 0, G: 0, B: 255, A: 255}, draw.Src)
+	//Горизонтальна частина хреста.
+	pw.w.Fill(image.Rect(pw.center.X-75, pw.center.Y-200, pw.center.X+75, pw.center.Y+200),
+		color.RGBA{R: 0, G: 0, B: 255, A: 255}, draw.Src)
+}
 
-	// TODO: Змінити колір фону та додати відображення фігури у вашому варіанті.
+func (pw *Visualizer) drawDefaultUI() {
+	pw.w.Fill(pw.sz.Bounds(), color.RGBA{R: 0, G: 255, B: 0, A: 255}, draw.Src) // Зеленый фон.
+
+	pw.drawCross() // Рисуем крест.
 
 	// Малювання білої рамки.
-	for _, br := range imageutil.Border(pw.sz.Bounds(), 10) {
+	for _, br := range imageutil.Border(pw.sz.Bounds(), 3) {
 		pw.w.Fill(br, color.White, draw.Src)
 	}
 }
