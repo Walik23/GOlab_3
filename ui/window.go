@@ -149,7 +149,7 @@ func (pw *Visualizer) drawCross() {
 func (pw *Visualizer) drawDefaultUI() {
 	pw.w.Fill(pw.sz.Bounds(), color.RGBA{R: 0, G: 255, B: 0, A: 255}, draw.Src) // Зеленый фон.
 
-	pw.drawCross() // Рисуем крест.
+	pw.drawCross() // Малюємо хрест.
 
 	// Малювання білої рамки.
 	for _, br := range imageutil.Border(pw.sz.Bounds(), 3) {
