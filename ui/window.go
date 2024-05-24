@@ -26,7 +26,6 @@ type Visualizer struct {
 	done chan struct{}
 
 	sz     size.Event
-	pos    image.Rectangle
 	center image.Point
 }
 
@@ -97,11 +96,11 @@ func detectTerminate(e any) bool {
 	switch e := e.(type) {
 	case lifecycle.Event:
 		if e.To == lifecycle.StageDead {
-			return true // Window destroy initiated.
+			return true
 		}
 	case key.Event:
 		if e.Code == key.CodeEscape {
-			return true // Esc pressed.
+			return true
 		}
 	}
 	return false
@@ -110,7 +109,7 @@ func detectTerminate(e any) bool {
 func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
 	switch e := e.(type) {
 
-	case size.Event: // Оновлення даних про розмір вікна.
+	case size.Event:
 		pw.sz = e
 		pw.center = image.Pt(pw.sz.WidthPx/2, pw.sz.HeightPx/2)
 
@@ -126,11 +125,9 @@ func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
 		}
 
 	case paint.Event:
-		// Малювання контенту вікна.
 		if t == nil {
 			pw.drawDefaultUI()
 		} else {
-			// Використання текстури отриманої через виклик Update.
 			pw.w.Scale(pw.sz.Bounds(), t, t.Bounds(), draw.Src, nil)
 		}
 		pw.w.Publish()
@@ -138,20 +135,35 @@ func (pw *Visualizer) handleEvent(e any, t screen.Texture) {
 }
 
 func (pw *Visualizer) drawCross() {
-	//Вертикальна частина хреста.
-	pw.w.Fill(image.Rect(pw.center.X-200, pw.center.Y-75, pw.center.X+200, pw.center.Y+75),
-		color.RGBA{R: 0, G: 0, B: 255, A: 255}, draw.Src)
-	//Горизонтальна частина хреста.
-	pw.w.Fill(image.Rect(pw.center.X-75, pw.center.Y-200, pw.center.X+75, pw.center.Y+200),
-		color.RGBA{R: 0, G: 0, B: 255, A: 255}, draw.Src)
+	DrawCross(pw.w, pw.center)
+}
+
+func DrawCross(up screen.Uploader, p image.Point) {
+	colorCross := color.RGBA{
+		R: 0,
+		G: 0,
+		B: 255,
+		A: 255,
+	}
+
+	up.Fill(
+		image.Rect(p.X-200, p.Y-75, p.X+200, p.Y+75),
+		colorCross,
+		draw.Src,
+	)
+
+	up.Fill(
+		image.Rect(p.X-75, p.Y-200, p.X+75, p.Y+200),
+		colorCross,
+		draw.Src,
+	)
 }
 
 func (pw *Visualizer) drawDefaultUI() {
-	pw.w.Fill(pw.sz.Bounds(), color.RGBA{R: 0, G: 255, B: 0, A: 255}, draw.Src) // Зеленый фон.
+	pw.w.Fill(pw.sz.Bounds(), color.RGBA{R: 0, G: 255, B: 0, A: 255}, draw.Src)
 
-	pw.drawCross() // Малюємо хрест.
+	pw.drawCross()
 
-	// Малювання білої рамки.
 	for _, br := range imageutil.Border(pw.sz.Bounds(), 3) {
 		pw.w.Fill(br, color.White, draw.Src)
 	}
