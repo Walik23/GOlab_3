@@ -1,106 +1,432 @@
 package painter
 
 import (
+	"errors"
 	"image"
 	"image/color"
-	"image/draw"
-	"reflect"
 	"testing"
 
 	"golang.org/x/exp/shiny/screen"
+	"golang.org/x/image/draw"
 )
 
-func TestLoop_Post(t *testing.T) {
-	var (
-		l  Loop
-		tr testReceiver
-	)
-	l.Receiver = &tr
+type MockReceiver struct {
+	calls int
+}
 
-	var testOps []string
+func (rec *MockReceiver) Update(_ screen.Texture) {
+	rec.calls++
+}
 
-	l.Start(mockScreen{})
-	l.Post(logOp(t, "do white fill", WhiteFill))
-	l.Post(logOp(t, "do green fill", GreenFill))
-	l.Post(UpdateOp)
+type MockScreen struct{}
 
-	for i := 0; i < 3; i++ {
-		go l.Post(logOp(t, "do green fill", GreenFill))
-	}
+func (s MockScreen) NewBuffer(_ image.Point) (screen.Buffer, error) {
+	return nil, errors.New("nothing")
+}
+func (s MockScreen) NewTexture(_ image.Point) (screen.Texture, error) {
+	return nil, errors.New("nothing")
+}
+func (s MockScreen) NewWindow(_ *screen.NewWindowOptions) (screen.Window, error) {
+	return nil, errors.New("nothing")
+}
 
-	l.Post(OperationFunc(func(screen.Texture) {
-		testOps = append(testOps, "op 1")
-		l.Post(OperationFunc(func(screen.Texture) {
-			testOps = append(testOps, "op 2")
-		}))
-	}))
-	l.Post(OperationFunc(func(screen.Texture) {
-		testOps = append(testOps, "op 3")
-	}))
+type MockTexture struct{}
 
-	l.StopAndWait()
+func (t MockTexture) Release() {}
+func (t MockTexture) Size() image.Point {
+	return image.Point{}
+}
+func (t MockTexture) Bounds() image.Rectangle {
+	return image.Rectangle{}
+}
+func (t MockTexture) Upload(_ image.Point, _ screen.Buffer, _ image.Rectangle) {}
+func (t MockTexture) Fill(_ image.Rectangle, _ color.Color, _ draw.Op)         {}
 
-	if tr.lastTexture == nil {
-		t.Fatal("Texture was not updated")
-	}
-	mt, ok := tr.lastTexture.(*mockTexture)
-	if !ok {
-		t.Fatal("Unexpected texture", tr.lastTexture)
-	}
-	if mt.Colors[0] != color.White {
-		t.Error("First color is not white:", mt.Colors)
-	}
-	if len(mt.Colors) != 2 {
-		t.Error("Unexpected size of colors:", mt.Colors)
-	}
+type ConChecker struct {
+	length int
+	res    chan struct{}
+}
 
-	if !reflect.DeepEqual(testOps, []string{"op 1", "op 2", "op 3"}) {
-		t.Error("Bad order:", testOps)
+func (c ConChecker) done() {
+	c.res <- struct{}{}
+}
+
+func (c ConChecker) check() {
+	for i := 0; i < c.length; i++ {
+		<-c.res
 	}
 }
 
-func logOp(t *testing.T, msg string, op OperationFunc) OperationFunc {
-	return func(tx screen.Texture) {
-		t.Log(msg)
-		op(tx)
+func makeChecker(length int) ConChecker {
+	return ConChecker{length: length, res: make(chan struct{}, length)}
+}
+
+func TestBlackFill(t *testing.T) {
+	ops := OperationList{
+		Fill{Color: color.RGBA{G: 0xff, A: 0xff}},
+		Fill{Color: color.Black},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+
+	c.check()
+
+	if loop.state.backgroundColor.Color != color.Black {
+		t.Error("Incorrect color")
 	}
 }
 
-type testReceiver struct {
-	lastTexture screen.Texture
+func TestDefault(t *testing.T) {
+	ops := OperationList{}
+
+	loop := Loop{Receiver: &MockReceiver{}}
+
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+
+	if loop.state.backgroundColor.Color != color.White || loop.state.backgroundRect != nil || loop.state.figureCenters != nil {
+		t.Error("Incorrect color")
+	}
 }
 
-func (tr *testReceiver) Update(t screen.Texture) {
-	tr.lastTexture = t
+func TestManyFills(t *testing.T) {
+	ops := OperationList{
+		Fill{Color: color.RGBA{G: 0x4f, A: 0xfb}}, Fill{Color: color.Black},
+		Fill{Color: color.RGBA{G: 0xff, A: 0xff}}, Fill{Color: color.Gray{Y: 40}},
+		Fill{Color: color.RGBA{G: 0xff, A: 0xfa}}, Fill{Color: color.White},
+		Fill{Color: color.RGBA{G: 0xfc, A: 0x4f}}, Fill{Color: color.Black},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+
+	c.check()
+
+	if loop.state.backgroundColor.Color != color.Black {
+		t.Error("Incorrect color")
+	}
 }
 
-type mockScreen struct{}
+func TestSaveLastRect(t *testing.T) {
+	ops := OperationList{
+		BgRect{
+			X1: 0.4,
+			Y1: 0.3,
+			X2: 0.5,
+			Y2: 0.7,
+		},
+		BgRect{
+			X1: 0.1,
+			Y1: 0.1,
+			X2: 0.2,
+			Y2: 0.3,
+		},
+	}
 
-func (m mockScreen) NewBuffer(size image.Point) (screen.Buffer, error) {
-	panic("implement me")
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	last := BgRect{
+		X1: 0.1,
+		Y1: 0.1,
+		X2: 0.2,
+		Y2: 0.3,
+	}
+
+	if *loop.state.backgroundRect != last {
+		t.Error("Incorrect rect")
+	}
 }
 
-func (m mockScreen) NewTexture(size image.Point) (screen.Texture, error) {
-	return new(mockTexture), nil
+func TestAddFigures(t *testing.T) {
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	first := Figure{
+		X: 0.4,
+		Y: 0.6,
+	}
+	second := Figure{
+		X: 0.1,
+		Y: 0.2,
+	}
+
+	if *loop.state.figureCenters[0] != first || *loop.state.figureCenters[1] != second {
+		t.Error("Incorrect figures")
+	}
 }
 
-func (m mockScreen) NewWindow(opts *screen.NewWindowOptions) (screen.Window, error) {
-	panic("implement me")
+func TestMoveBothFigures(t *testing.T) {
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	moved := Figure{
+		X: 0.3,
+		Y: 0.1,
+	}
+
+	if *loop.state.figureCenters[0] != moved || *loop.state.figureCenters[1] != moved {
+		t.Error("Incorrect figures")
+	}
 }
 
-type mockTexture struct {
-	Colors []color.Color
+func TestMoveFirstFigure(t *testing.T) {
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	first := Figure{
+		X: 0.3,
+		Y: 0.1,
+	}
+	second := Figure{
+		X: 0.1,
+		Y: 0.2,
+	}
+
+	if *loop.state.figureCenters[0] != first || *loop.state.figureCenters[1] != second {
+		t.Error("Incorrect figures")
+	}
 }
 
-func (m *mockTexture) Release() {}
+func TestDontMoveFigures(t *testing.T) {
+	ops := OperationList{
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+	}
 
-func (m *mockTexture) Size() image.Point { return size }
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
 
-func (m *mockTexture) Bounds() image.Rectangle {
-	return image.Rectangle{Max: m.Size()}
+	first := Figure{
+		X: 0.4,
+		Y: 0.6,
+	}
+	second := Figure{
+		X: 0.1,
+		Y: 0.2,
+	}
+
+	if *loop.state.figureCenters[0] != first || *loop.state.figureCenters[1] != second {
+		t.Error("Incorrect figures")
+	}
 }
 
-func (m *mockTexture) Upload(dp image.Point, src screen.Buffer, sr image.Rectangle) {}
-func (m *mockTexture) Fill(dr image.Rectangle, src color.Color, op draw.Op) {
-	m.Colors = append(m.Colors, src)
+func TestReset(t *testing.T) {
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+		BgRect{
+			X1: 0.4,
+			Y1: 0.3,
+			X2: 0.5,
+			Y2: 0.7,
+		},
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+		Fill{Color: color.RGBA{G: 0xff, A: 0xff}},
+		BgRect{
+			X1: 0.1,
+			Y1: 0.1,
+			X2: 0.2,
+			Y2: 0.3,
+		},
+		Fill{Color: color.Black},
+		Reset{},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	if loop.state.figureCenters != nil || loop.state.backgroundRect != nil || loop.state.backgroundColor.Color != color.Black {
+		t.Error("Reset works incorrectly")
+	}
+}
+
+func TestInChaoticOrder(t *testing.T) {
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		BgRect{
+			X1: 0.4,
+			Y1: 0.3,
+			X2: 0.5,
+			Y2: 0.7,
+		},
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+		Fill{Color: color.Black},
+		BgRect{
+			X1: 0.1,
+			Y1: 0.1,
+			X2: 0.2,
+			Y2: 0.3,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+		Fill{Color: color.RGBA{G: 0xff, A: 0xff}},
+	}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: &MockReceiver{}, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.Post(ops)
+	c.check()
+
+	figure1 := Figure{
+		X: 0.3,
+		Y: 0.1,
+	}
+	figure2 := Figure{
+		X: 0.1,
+		Y: 0.2,
+	}
+	rect := BgRect{
+		X1: 0.1,
+		Y1: 0.1,
+		X2: 0.2,
+		Y2: 0.3,
+	}
+	fill := Fill{
+		Color: color.RGBA{G: 0xff, A: 0xff},
+	}
+
+	if *loop.state.figureCenters[0] != figure1 || *loop.state.figureCenters[1] != figure2 || *loop.state.backgroundRect != rect || *loop.state.backgroundColor != fill {
+		t.Error("Chaotic order works incorrectly")
+	}
+}
+
+func TestUpdate(t *testing.T) {
+
+	ops := OperationList{
+		Figure{
+			X: 0.4,
+			Y: 0.6,
+		},
+		BgRect{
+			X1: 0.4,
+			Y1: 0.3,
+			X2: 0.5,
+			Y2: 0.7,
+		},
+		Move{
+			X: 0.3,
+			Y: 0.1,
+		},
+		Fill{Color: color.Black},
+		BgRect{
+			X1: 0.1,
+			Y1: 0.1,
+			X2: 0.2,
+			Y2: 0.3,
+		},
+		Figure{
+			X: 0.1,
+			Y: 0.2,
+		},
+		Fill{Color: color.RGBA{G: 0xff, A: 0xff}},
+		Update{},
+	}
+
+	rec := &MockReceiver{}
+
+	c := makeChecker(len(ops))
+	loop := Loop{Receiver: rec, doneFunc: c.done}
+	loop.Start(MockScreen{})
+	loop.next = MockTexture{}
+	loop.Post(ops)
+	c.check()
+
+	if rec.calls != 1 {
+		t.Error("Update works incorrectly")
+	}
 }
